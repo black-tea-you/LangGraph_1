@@ -27,7 +27,7 @@ API 요청 → EvalService → LangGraph → Redis
                      ↓
             Eval Turn SubGraph (백그라운드)
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, AsyncIterator
 from datetime import datetime
 import logging
 
@@ -74,109 +74,6 @@ class EvalService:
         self.state_repo = StateRepository(redis)
         self.checkpointer = MemorySaver()  # LangGraph 체크포인트 (in-memory)
         self.graph = create_main_graph(self.checkpointer)  # 메인 그래프 컴파일
-    
-    async def process_message_stream(
-        self,
-        session_id: str,
-        exam_id: int,
-        participant_id: int,
-        spec_id: int,
-        human_message: str,
-    ):
-        """
-        메시지 처리 및 스트리밍 (WebSocket용)
-        
-        [처리 흐름]
-        1. Redis에서 기존 상태 로드 (또는 초기 상태 생성)
-        2. LangGraph 메인 플로우 스트리밍 실행
-           - Handle Request → Intent Analyzer → Writer LLM (스트리밍) → END
-        3. Writer LLM 노드의 스트리밍 응답만 yield
-        
-        [스트리밍]
-        - Writer LLM 노드의 응답만 스트리밍으로 전송
-        - 나머지 노드는 비동기로 실행
-        
-        Args:
-            session_id: 세션 ID
-            exam_id: 시험 ID
-            participant_id: 참가자 ID
-            spec_id: 문제 스펙 ID
-            human_message: 사용자 메시지
-        
-        Yields:
-            str: Writer LLM의 스트리밍 토큰
-        """
-        try:
-            # 기존 상태 로드 또는 초기 상태 생성
-            existing_state = await self.state_repo.get_state(session_id)
-            
-            if existing_state:
-                state = existing_state
-                state["human_message"] = human_message
-                state["is_submitted"] = False
-            else:
-                state = get_initial_state(
-                    session_id=session_id,
-                    exam_id=exam_id,
-                    participant_id=participant_id,
-                    spec_id=spec_id,
-                    human_message=human_message,
-                )
-            
-            # 그래프 설정
-            config = {
-                "configurable": {
-                    "thread_id": session_id,
-                }
-            }
-            
-            logger.info(f"LangGraph 스트리밍 시작 - session_id: {session_id}")
-            
-            # LangGraph 이벤트 스트리밍
-            # version="v2"는 LangGraph의 최신 이벤트 스트리밍 API
-            async for event in self.graph.astream_events(state, config, version="v2"):
-                # Writer LLM 노드의 스트리밍 이벤트만 필터링
-                event_type = event.get("event")
-                event_name = event.get("name")
-                
-                # Writer 노드("writer")에서 발생하는 LLM 스트리밍 이벤트 캡처
-                # 이벤트 구조: {"event": "on_chat_model_stream", "name": "writer", "data": {"chunk": ...}}
-                if event_type == "on_chat_model_stream" and event_name == "writer":
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk:
-                        # chunk가 문자열인 경우
-                        if isinstance(chunk, str):
-                            if chunk:
-                                yield chunk
-                        # chunk가 객체인 경우 (AIMessageChunk 등)
-                        elif hasattr(chunk, 'content'):
-                            content = chunk.content
-                            if content:
-                                yield content
-                        # chunk가 dict인 경우
-                        elif isinstance(chunk, dict):
-                            content = chunk.get("content") or chunk.get("text") or chunk.get("delta")
-                            if content:
-                                yield content
-            
-            # 일반 채팅인 경우 4번 노드(Eval Turn)를 백그라운드로 실행
-            final_state = await self.state_repo.get_state(session_id)
-            if final_state and final_state.get("ai_message"):
-                logger.info(f"[EvalService] 일반 채팅 - 4번 노드(Eval Turn) 백그라운드 실행 시작")
-                asyncio.create_task(
-                    self._run_eval_turn_background(
-                        session_id=session_id,
-                        current_turn=final_state.get("current_turn", 0),
-                        human_message=human_message,
-                        ai_message=final_state.get("ai_message"),
-                    )
-                )
-            
-            logger.info(f"LangGraph 스트리밍 완료 - session_id: {session_id}")
-            
-        except Exception as e:
-            logger.error(f"스트리밍 처리 중 오류 발생: {str(e)}", exc_info=True)
-            raise
     
     async def process_message(
         self,
@@ -330,6 +227,144 @@ class EvalService:
                 "error_message": f"처리 중 오류가 발생했습니다: {str(e)}",
                 "error_details": error_details,
             }
+    
+    async def process_message_stream(
+        self,
+        session_id: str,
+        exam_id: int,
+        participant_id: int,
+        spec_id: int,
+        human_message: str,
+        is_submission: bool = False,
+        code_content: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """
+        메시지 처리 및 스트리밍 (WebSocket용)
+        
+        [처리 흐름]
+        1. Redis에서 기존 상태 로드 (또는 초기 상태 생성)
+        2. LangGraph 메인 플로우 스트리밍 실행
+           - Writer LLM의 토큰 단위 스트리밍
+           - Intent Analyzer, Writer LLM 등 모든 노드 실행
+        3. 스트리밍 완료 후 일반 채팅: Eval Turn SubGraph를 백그라운드로 실행
+        4. 결과를 Redis에 저장
+        
+        [스트리밍 방식]
+        - LangGraph의 `astream_events()` 사용
+        - Writer LLM 노드의 delta 이벤트만 필터링
+        - 토큰 단위로 yield
+        
+        [백그라운드 평가]
+        - 일반 채팅(is_submission=False): 스트리밍 완료 후 _run_eval_turn_background() 비동기 실행
+        - 제출(is_submission=True): 백그라운드 없음 (동기적으로 모든 평가 완료)
+        
+        Args:
+            session_id: 세션 ID (고유)
+            exam_id: 시험 ID
+            participant_id: 참가자 ID
+            spec_id: 문제 스펙 ID
+            human_message: 사용자 메시지
+            is_submission: 제출 여부 (False: 일반 채팅, True: 코드 제출)
+            code_content: 제출 코드 (제출 시만 필요)
+        
+        Yields:
+            str: Writer LLM의 토큰 청크
+        """
+        try:
+            # 기존 상태 로드 또는 초기 상태 생성
+            existing_state = await self.state_repo.get_state(session_id)
+            
+            if existing_state:
+                # 기존 상태 업데이트
+                state = existing_state
+                state["human_message"] = human_message
+                state["is_submitted"] = is_submission
+                if code_content:
+                    state["code_content"] = code_content
+            else:
+                # 초기 상태 생성
+                state = get_initial_state(
+                    session_id=session_id,
+                    exam_id=exam_id,
+                    participant_id=participant_id,
+                    spec_id=spec_id,
+                    human_message=human_message,
+                )
+                if is_submission:
+                    state["is_submitted"] = True
+                if code_content:
+                    state["code_content"] = code_content
+            
+            # 그래프 실행 설정
+            config = {
+                "configurable": {
+                    "thread_id": session_id,
+                }
+            }
+            
+            logger.info(f"LangGraph 스트리밍 시작 - session_id: {session_id}, is_submission: {is_submission}")
+            
+            # Writer LLM 노드의 토큰만 스트리밍
+            async for event in self.graph.astream_events(state, config, version="v2"):
+                # Writer LLM 노드의 스트림 이벤트만 필터링
+                if (
+                    event.get("event") == "on_chat_model_stream"
+                    and event.get("name") == "writer"
+                ):
+                    chunk = event.get("data", {}).get("chunk")
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        yield chunk.content
+            
+            logger.info(f"LangGraph 스트리밍 완료 - session_id: {session_id}")
+            
+            # 스트리밍 완료 후 최종 결과를 얻기 위해 상태를 다시 로드
+            # (스트리밍 중 상태가 업데이트되었을 수 있음)
+            final_result = await self.state_repo.get_state(session_id)
+            
+            # 최종 결과가 없거나 불완전한 경우 전체 그래프 재실행
+            if not final_result or not final_result.get("ai_message"):
+                logger.warning(f"스트리밍 후 상태가 불완전함 - 전체 실행으로 대체 - session_id: {session_id}")
+                # 상태를 다시 준비
+                if existing_state:
+                    state = existing_state
+                    state["human_message"] = human_message
+                    state["is_submitted"] = is_submission
+                    if code_content:
+                        state["code_content"] = code_content
+                else:
+                    state = get_initial_state(
+                        session_id=session_id,
+                        exam_id=exam_id,
+                        participant_id=participant_id,
+                        spec_id=spec_id,
+                        human_message=human_message,
+                    )
+                    if is_submission:
+                        state["is_submitted"] = True
+                    if code_content:
+                        state["code_content"] = code_content
+                
+                final_result = await self.graph.ainvoke(state, config)
+            
+            # 디버깅: 결과 로깅
+            logger.info(f"LangGraph 결과 - session_id: {session_id}, keys: {list(final_result.keys()) if final_result else 'None'}")
+            
+            # 일반 채팅인 경우 4번 노드(Eval Turn)를 백그라운드로 실행
+            if not is_submission and final_result and final_result.get("ai_message"):
+                logger.info(f"[EvalService] 일반 채팅 - 4번 노드(Eval Turn) 백그라운드 실행 시작")
+                # 백그라운드 태스크로 4번 노드 실행
+                import asyncio
+                asyncio.create_task(self._run_eval_turn_background(session_id, final_result))
+            
+            # 상태 저장
+            if final_result:
+                await self.state_repo.save_state(session_id, final_result)
+            
+        except Exception as e:
+            logger.error(f"[EvalService] 스트리밍 처리 중 오류 발생 - session_id: {session_id}", exc_info=True)
+            logger.error(f"[EvalService] 에러 타입: {type(e).__name__}, 메시지: {str(e)}")
+            # 스트리밍 중 에러는 yield로 전달할 수 없으므로 로깅만 수행
+            raise
     
     async def submit_code(
         self,

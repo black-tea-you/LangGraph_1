@@ -13,7 +13,7 @@ import subprocess
 from datetime import datetime
 
 BASE_URL = "http://localhost:8000"
-SESSION_FILE = "data/turn_sessions.json"
+SESSION_FILE = "turn_sessions.json"
 
 # 제출할 코드 (피보나치 예제)
 SUBMIT_CODE = """def fibonacci(n):

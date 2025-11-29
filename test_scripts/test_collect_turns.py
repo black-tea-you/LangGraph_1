@@ -10,16 +10,17 @@ import json
 from datetime import datetime
 
 BASE_URL = "http://localhost:8000"
-SESSION_FILE = "data/turn_sessions.json"
+SESSION_FILE = "turn_sessions.json"
 
 # 테스트 데이터
 EXAM_ID = 1
 PARTICIPANT_ID = 100
 SPEC_ID = 10
 
-# 1턴 대화 시나리오 (단일 Turn 테스트)
+# 2턴 대화 시나리오 (API Quota 절약)
 TURNS = [
-    "피보나치 수열을 O(n) 시간 복잡도로 계산하는 함수를 작성해주세요. 동적 프로그래밍을 사용하고, 입출력 예시도 제공해주세요."
+    "피보나치 수열을 계산하는 함수를 작성해주세요.",
+    "O(n) 시간 복잡도로 최적화해주세요."
 ]
 
 

@@ -5,7 +5,7 @@ import json
 import subprocess
 from datetime import datetime
 
-SESSION_FILE = "data/turn_sessions.json"
+SESSION_FILE = "turn_sessions.json"
 
 
 def load_sessions():

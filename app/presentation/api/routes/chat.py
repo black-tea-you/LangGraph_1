@@ -19,7 +19,7 @@
 3. WS /api/chat/ws
    - WebSocket 스트리밍 채팅
    - Delta 스트리밍, 취소 기능, turnId 전달
-   - LangGraph 우회 (직접 LLM 호출)
+   - LangGraph 사용 (Intent Analyzer, Writer LLM, Eval Turn 포함)
 
 [처리 흐름]
 1. 요청 수신 → 2. EvalService 호출 → 3. LangGraph 실행 → 4. 응답 반환
@@ -38,7 +38,6 @@ from app.presentation.schemas.common import ErrorResponse
 from app.application.services.eval_service import EvalService
 from app.infrastructure.cache.redis_client import redis_client, get_redis
 from app.core.config import settings
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -192,7 +191,7 @@ async def send_message(
     5. Final Score Aggregation (최종 점수 산출)
     
     **제한사항:**
-    - Timeout: 60초 (평가 시간 고려)
+    - Timeout: 120초 (평가 시간 고려)
     - 제출은 세션당 1회만 가능
     """
 )
@@ -232,7 +231,7 @@ async def submit_code(
     try:
         logger.info(f"코드 제출 수신 - session_id: {request.session_id}")
         
-        # 1분 타임아웃 설정 (평가 시간 고려)
+        # 2분 타임아웃 설정 (평가 시간 고려)
         # 평가 노드들이 순차적으로 실행되므로 충분한 시간 필요
         result = await asyncio.wait_for(
             eval_service.submit_code(
@@ -271,7 +270,7 @@ async def submit_code(
             error_message=None,
         )
     except asyncio.TimeoutError:
-        # 평가 프로세스가 60초 이내에 완료되지 않은 경우
+        # 평가 프로세스가 2분 이내에 완료되지 않은 경우
         # 원인: 
         # - Eval Turn Guard의 백그라운드 평가 대기 시간 초과
         # - LLM API 지연 (Holistic Flow, Performance, Correctness 평가)
@@ -284,7 +283,7 @@ async def submit_code(
             final_scores=None,
             turn_scores=None,
             error=True,
-            error_message="요청 처리 시간이 초과되었습니다. (1분 타임아웃)",
+            error_message="요청 처리 시간이 초과되었습니다. (2분 타임아웃)",
         )
     except Exception as e:
         # 예상치 못한 모든 예외 처리

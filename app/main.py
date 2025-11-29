@@ -31,9 +31,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.db.redis_client import redis_client
-from app.db.session import init_db, close_db
-from app.api.routes import chat_router, session_router, health_router
+from app.infrastructure.cache.redis_client import redis_client
+from app.infrastructure.persistence.session import init_db, close_db
+from app.presentation.api.routes import chat_router, session_router, health_router
 
 
 # 로깅 설정

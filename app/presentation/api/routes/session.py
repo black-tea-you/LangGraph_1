@@ -277,13 +277,17 @@ async def submit_code(
     try:
         logger.info(
             f"[SubmitCode] 제출 수신 - "
-            f"submissionId: {request.submissionId}, examParticipantId: {request.examParticipantId}, "
-            f"problemId: {request.problemId}, language: {request.language}"
+            f"submissionId: {request.submissionId}, examId: {request.examId}, participantId: {request.participantId}, "
+            f"problemId: {request.problemId}, specId: {request.specId}, language: {request.language}"
         )
         
-        # [1] examParticipantId로 exam_participants 조회
-        # exam_participants 테이블에서 id로 조회
-        query = select(ExamParticipant).where(ExamParticipant.id == request.examParticipantId)
+        # [1] examId와 participantId로 exam_participants 조회
+        query = select(ExamParticipant).where(
+            and_(
+                ExamParticipant.exam_id == request.examId,
+                ExamParticipant.participant_id == request.participantId
+            )
+        )
         result = await db.execute(query)
         exam_participant = result.scalar_one_or_none()
         
@@ -293,7 +297,7 @@ async def submit_code(
                 detail={
                     "error": True,
                     "error_code": "EXAM_PARTICIPANT_NOT_FOUND",
-                    "error_message": f"시험 참가자 정보를 찾을 수 없습니다. (examParticipantId: {request.examParticipantId})"
+                    "error_message": f"시험 참가자 정보를 찾을 수 없습니다. (examId: {request.examId}, participantId: {request.participantId})"
                 }
             )
         
@@ -350,9 +354,10 @@ async def submit_code(
                 session_id=redis_session_id,
                 exam_id=exam_id,
                 participant_id=participant_id,
-                spec_id=request.specVersion,
+                spec_id=request.specId,
                 code_content=request.finalCode,
                 lang=request.language,
+                submission_id=request.submissionId,  # BE에서 생성한 submission ID 전달
             )
             
             logger.info(f"[SubmitCode] ===== 평가 완료 =====")

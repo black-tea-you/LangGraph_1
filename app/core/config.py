@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     
     # PostgreSQL 설정 (Spring Boot와 공유)
     POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: int = 5432
+    POSTGRES_PORT: int = 5435  # Docker 컨테이너 포트 매핑: 5435:5432
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "postgres"
     POSTGRES_DB: str = "ai_vibe_coding_test"
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     
     # Redis 설정 (세션 상태 관리)
     REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
+    REDIS_PORT: int = 6378
     REDIS_PASSWORD: Optional[str] = None
     REDIS_DB: int = 0
     

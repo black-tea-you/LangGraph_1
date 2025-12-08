@@ -384,6 +384,7 @@ class EvalService:
         spec_id: int,
         code_content: str,
         lang: str = "python",
+        submission_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         코드 제출 및 최종 평가
@@ -395,6 +396,7 @@ class EvalService:
             spec_id: 문제 스펙 ID
             code_content: 제출 코드
             lang: 프로그래밍 언어
+            submission_id: BE에서 생성한 제출 ID (Optional)
         
         Returns:
             평가 결과
@@ -408,6 +410,8 @@ class EvalService:
             existing_state["is_submitted"] = True
             existing_state["code_content"] = code_content
             existing_state["lang"] = lang
+            if submission_id:
+                existing_state["submission_id"] = submission_id
         else:
             # 초기 상태 생성
             state = get_initial_state(
@@ -420,6 +424,8 @@ class EvalService:
             state["is_submitted"] = True
             state["code_content"] = code_content
             state["lang"] = lang
+            if submission_id:
+                state["submission_id"] = submission_id
             existing_state = state
         
         # 그래프 실행

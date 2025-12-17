@@ -137,7 +137,8 @@ async def eval_turn_submit_guard(state: MainGraphState) -> Dict[str, Any]:
                 logger.info(f"[4. Eval Turn Guard] AI 응답: {ai_msg[:100]}...")
                 logger.info("")
                 
-                await _evaluate_turn_sync(
+                # 평가 실행 및 결과 받기
+                eval_result = await _evaluate_turn_sync(
                     session_id=session_id,
                     turn=turn,
                     human_message=human_msg,
@@ -145,8 +146,38 @@ async def eval_turn_submit_guard(state: MainGraphState) -> Dict[str, Any]:
                     problem_context=state.get("problem_context")
                 )
                 
+                # 평가 결과 요약 출력
                 logger.info("")
+                logger.info("=" * 80)
                 logger.info(f"[4. Eval Turn Guard] ===== 턴 {turn} 평가 완료 ✓ =====")
+                
+                if eval_result:
+                    intent_type = eval_result.get("intent_type", "UNKNOWN")
+                    turn_score = eval_result.get("turn_score", 0)
+                    intent_confidence = eval_result.get("intent_confidence", 0.0)
+                    rubrics = eval_result.get("rubrics", [])
+                    comprehensive_reasoning = eval_result.get("comprehensive_reasoning", "")
+                    
+                    logger.info(f"[4. Eval Turn Guard] 📊 턴 {turn} 평가 결과 요약:")
+                    logger.info(f"[4. Eval Turn Guard]   • 의도: {intent_type} (신뢰도: {intent_confidence:.2f})")
+                    logger.info(f"[4. Eval Turn Guard]   • 점수: {turn_score:.2f}점")
+                    
+                    if rubrics:
+                        logger.info(f"[4. Eval Turn Guard]   • 루브릭 평가 ({len(rubrics)}개):")
+                        for rubric in rubrics[:5]:  # 최대 5개만 표시
+                            rubric_name = rubric.get("name", rubric.get("criterion", ""))
+                            rubric_score = rubric.get("score", 0)
+                            logger.info(f"[4. Eval Turn Guard]     - {rubric_name}: {rubric_score:.2f}점")
+                        if len(rubrics) > 5:
+                            logger.info(f"[4. Eval Turn Guard]     ... 외 {len(rubrics) - 5}개")
+                    
+                    if comprehensive_reasoning:
+                        reasoning_preview = comprehensive_reasoning[:200] + "..." if len(comprehensive_reasoning) > 200 else comprehensive_reasoning
+                        logger.info(f"[4. Eval Turn Guard]   • 평가 내용: {reasoning_preview}")
+                else:
+                    logger.warning(f"[4. Eval Turn Guard]   ⚠️ 평가 결과 정보 없음")
+                
+                logger.info("=" * 80)
                 logger.info("")
             else:
                 logger.error("")
@@ -201,7 +232,7 @@ async def _evaluate_turn_sync(
     human_message: str,
     ai_message: str,
     problem_context: Optional[Dict[str, Any]] = None
-) -> None:
+) -> Optional[Dict[str, Any]]:
     """
     특정 턴을 동기적으로 평가
     
@@ -243,10 +274,25 @@ async def _evaluate_turn_sync(
         logger.info(f"[Eval Turn Sync] Eval Turn SubGraph 실행 완료 - turn: {turn}")
         
         intent_type = result.get("intent_type", "UNKNOWN")
+        intent_types = result.get("intent_types", [intent_type] if intent_type and intent_type != "UNKNOWN" else [])
+        intent_confidence = result.get("intent_confidence", 0.0)
         turn_score = result.get("turn_score", 0)
+        turn_log_data = result.get("turn_log", {})
+        evaluations = turn_log_data.get("evaluations", {})
+        detailed_feedback = turn_log_data.get("detailed_feedback", [])
+        comprehensive_reasoning = turn_log_data.get("comprehensive_reasoning", "")
+        
+        # intent_type이 "UNKNOWN"이면 intent_types[0] 사용
+        if intent_type == "UNKNOWN" and intent_types:
+            intent_type = intent_types[0]
+        
+        # final_intent 정의 (JSON 출력에서 사용하기 위해 먼저 정의)
+        final_intent = intent_type if intent_type != "UNKNOWN" else (intent_types[0] if intent_types else "UNKNOWN")
         
         logger.info(f"[Eval Turn Sync] 턴 {turn} 평가 결과:")
         logger.info(f"[Eval Turn Sync]   - Intent Type: {intent_type}")
+        logger.info(f"[Eval Turn Sync]   - Intent Types: {intent_types}")
+        logger.info(f"[Eval Turn Sync]   - Intent Confidence: {intent_confidence}")
         logger.info(f"[Eval Turn Sync]   - Turn Score: {turn_score}")
         
         # LLM 응답 요약 로그
@@ -254,39 +300,259 @@ async def _evaluate_turn_sync(
         if answer_summary:
             logger.info(f"[Eval Turn Sync]   - Answer Summary: {answer_summary[:200]}...")
         
-        # 개별 평가 결과에서 rubrics 생성
-        eval_mapping = {
-            "rule_setting_eval": "규칙 설정 (Rules)",
-            "generation_eval": "코드 생성 (Generation)",
-            "optimization_eval": "최적화 (Optimization)",
-            "debugging_eval": "디버깅 (Debugging)",
-            "test_case_eval": "테스트 케이스 (Test Case)",
-            "hint_query_eval": "힌트/질의 (Hint/Query)",
-            "follow_up_eval": "후속 응답 (Follow-up)"
-        }
+        # 상세 평가 내용 로그 (루브릭, 분석 등)
+        logger.info(f"[Eval Turn Sync] ===== 턴 {turn} 상세 평가 내용 =====")
         
-        rubrics = []
-        for eval_key, criterion_name in eval_mapping.items():
-            eval_result = result.get(eval_key)
-            if eval_result and isinstance(eval_result, dict):
-                rubrics.append({
-                    "criterion": criterion_name,
-                    "score": eval_result.get("average", 0),
-                    "reason": eval_result.get("feedback", "평가 없음")
-                })
+        # comprehensive_reasoning 로그
+        if comprehensive_reasoning:
+            logger.info(f"[Eval Turn Sync]   - 종합 분석:")
+            logger.info(f"[Eval Turn Sync]     {comprehensive_reasoning[:500]}{'...' if len(comprehensive_reasoning) > 500 else ''}")
+            
+            # 전체 분석 텍스트 JSON 출력 (발표자료용)
+            import json
+            analysis_json = {
+                "turn": turn,
+                "intent": final_intent,
+                "analysis_text": comprehensive_reasoning
+            }
+            logger.info("")
+            logger.info(f"[Eval Turn Sync] ===== 턴 {turn} 평가 분석 텍스트 (JSON) =====")
+            logger.info(json.dumps(analysis_json, indent=4, ensure_ascii=False))
+            logger.info("")
         
-        # 상세 turn_log 구조 생성
+        # evaluations 로그 (각 평가 타입별 결과)
+        if evaluations:
+            logger.info(f"[Eval Turn Sync]   - 평가 타입별 결과:")
+            for eval_key, eval_result in evaluations.items():
+                if isinstance(eval_result, dict):
+                    eval_score = eval_result.get("score", eval_result.get("average", 0))
+                    eval_feedback = eval_result.get("final_reasoning", eval_result.get("feedback", ""))
+                    logger.info(f"[Eval Turn Sync]     * {eval_key}: {eval_score:.2f}점")
+                    if eval_feedback:
+                        logger.info(f"[Eval Turn Sync]       {eval_feedback[:200]}{'...' if len(eval_feedback) > 200 else ''}")
+        
+        # detailed_feedback 로그
+        if detailed_feedback:
+            logger.info(f"[Eval Turn Sync]   - 상세 피드백 ({len(detailed_feedback)}개):")
+            for idx, feedback in enumerate(detailed_feedback, 1):
+                feedback_intent = feedback.get("intent", "UNKNOWN")
+                feedback_score = feedback.get("score", 0)
+                logger.info(f"[Eval Turn Sync]     [{idx}] Intent: {feedback_intent}, Score: {feedback_score:.2f}점")
+                feedback_rubrics = feedback.get("rubrics", [])
+                if feedback_rubrics:
+                    for rubric in feedback_rubrics:
+                        if isinstance(rubric, dict):
+                            rubric_name = rubric.get("criterion", rubric.get("name", ""))
+                            rubric_score = rubric.get("score", 0)
+                            rubric_reasoning = rubric.get("reasoning", rubric.get("reason", ""))
+                            logger.info(f"[Eval Turn Sync]       - {rubric_name}: {rubric_score:.2f}점")
+                            if rubric_reasoning:
+                                logger.info(f"[Eval Turn Sync]         이유: {rubric_reasoning[:150]}{'...' if len(rubric_reasoning) > 150 else ''}")
+        
+        # weights 정보 가져오기 (intent_type을 대문자로 변환)
+        from app.domain.langgraph.nodes.turn_evaluator.weights import get_weights_for_intent
+        # intent_type이 소문자 형식("hint_or_query")이면 대문자로 변환
+        intent_for_weights = intent_type.upper().replace("-", "_") if intent_type else "UNKNOWN"
+        weights = get_weights_for_intent(intent_for_weights)
+        
+        # 상세 루브릭 정보 추출
+        # 1순위: detailed_feedback에서 primary intent의 rubrics 사용
+        # 2순위: evaluations에서 primary intent의 rubrics 사용
+        # 3순위: result에서 직접 추출
+        detailed_rubrics = []
+        
+        # detailed_feedback에서 primary intent의 rubrics 추출
+        if detailed_feedback:
+            # intent_type에 해당하는 피드백 찾기
+            primary_feedback = None
+            for feedback in detailed_feedback:
+                feedback_intent = feedback.get("intent", "")
+                # intent_type과 매칭 (예: "HINT_OR_QUERY" -> "hint_query_eval")
+                if intent_type and (intent_type in feedback_intent.upper() or feedback_intent.upper() in intent_type):
+                    primary_feedback = feedback
+                    break
+            
+            # 매칭되는 것이 없으면 첫 번째 피드백 사용
+            if not primary_feedback and detailed_feedback:
+                primary_feedback = detailed_feedback[0]
+            
+            if primary_feedback:
+                feedback_rubrics = primary_feedback.get("rubrics", [])
+                for rubric in feedback_rubrics:
+                    if isinstance(rubric, dict):
+                        detailed_rubrics.append({
+                            "name": rubric.get("criterion", rubric.get("name", "")),
+                            "score": rubric.get("score", 0.0),
+                            "reasoning": rubric.get("reasoning", rubric.get("reason", "평가 없음")),
+                            "criterion": rubric.get("criterion", rubric.get("name", ""))  # 호환성 유지
+                        })
+        
+        # detailed_rubrics가 없으면 evaluations에서 추출
+        if not detailed_rubrics and evaluations:
+            # intent_type을 eval_key로 변환 시도
+            intent_to_eval_key = {
+                "GENERATION": "generation_eval",
+                "OPTIMIZATION": "optimization_eval",
+                "DEBUGGING": "debugging_eval",
+                "TEST_CASE": "test_case_eval",
+                "HINT_OR_QUERY": "hint_query_eval",
+                "FOLLOW_UP": "follow_up_eval",
+                "RULE_SETTING": "rule_setting_eval",
+            }
+            
+            eval_key = intent_to_eval_key.get(intent_type)
+            primary_eval = evaluations.get(eval_key) if eval_key else None
+            
+            if not primary_eval and evaluations:
+                # 첫 번째 평가 결과 사용
+                primary_eval = list(evaluations.values())[0] if evaluations else None
+            
+            if primary_eval and isinstance(primary_eval, dict):
+                eval_rubrics = primary_eval.get("rubrics", [])
+                for rubric in eval_rubrics:
+                    if isinstance(rubric, dict):
+                        detailed_rubrics.append({
+                            "name": rubric.get("criterion", rubric.get("name", "")),
+                            "score": rubric.get("score", 0.0),
+                            "reasoning": rubric.get("reasoning", rubric.get("reason", "평가 없음")),
+                            "criterion": rubric.get("criterion", rubric.get("name", ""))  # 호환성 유지
+                        })
+        
+        # detailed_rubrics가 여전히 없으면 result에서 직접 추출 (fallback)
+        if not detailed_rubrics:
+            eval_mapping = {
+                "rule_setting_eval": "규칙 설정 (Rules)",
+                "generation_eval": "코드 생성 (Generation)",
+                "optimization_eval": "최적화 (Optimization)",
+                "debugging_eval": "디버깅 (Debugging)",
+                "test_case_eval": "테스트 케이스 (Test Case)",
+                "hint_query_eval": "힌트/질의 (Hint/Query)",
+                "follow_up_eval": "후속 응답 (Follow-up)"
+            }
+            
+            for eval_key, criterion_name in eval_mapping.items():
+                eval_result = result.get(eval_key)
+                if eval_result and isinstance(eval_result, dict):
+                    # eval_result의 rubrics 사용 (상세 정보)
+                    eval_rubrics = eval_result.get("rubrics", [])
+                    if eval_rubrics:
+                        for rubric in eval_rubrics:
+                            if isinstance(rubric, dict):
+                                detailed_rubrics.append({
+                                    "name": rubric.get("criterion", criterion_name),
+                                    "score": rubric.get("score", eval_result.get("average", 0)),
+                                    "reasoning": rubric.get("reasoning", rubric.get("reason", "평가 없음")),
+                                    "criterion": rubric.get("criterion", criterion_name)  # 호환성 유지
+                                })
+                    else:
+                        # rubrics가 없으면 간단한 형식
+                        detailed_rubrics.append({
+                            "name": criterion_name,
+                            "score": eval_result.get("average", 0),
+                            "reasoning": eval_result.get("final_reasoning", eval_result.get("feedback", "평가 없음")),
+                            "criterion": criterion_name  # 호환성 유지
+                        })
+        
+        # 상세 turn_log 구조 생성 (중복 제거)
+        # final_intent는 이미 위에서 정의됨 (288번 줄)
+        
+        # detailed_rubrics 로그 (최종 루브릭 정보)
+        if detailed_rubrics:
+            logger.info(f"[Eval Turn Sync]   - 최종 루브릭 평가 ({len(detailed_rubrics)}개):")
+            for rubric in detailed_rubrics:
+                rubric_name = rubric.get("name", rubric.get("criterion", ""))
+                rubric_score = rubric.get("score", 0)
+                rubric_reasoning = rubric.get("reasoning", "")
+                logger.info(f"[Eval Turn Sync]     * {rubric_name}: {rubric_score:.2f}점")
+                if rubric_reasoning:
+                    logger.info(f"[Eval Turn Sync]       {rubric_reasoning[:150]}{'...' if len(rubric_reasoning) > 150 else ''}")
+        
+        # JSON 형식으로 점수와 가중치 출력 (발표자료용)
+        import json
+        if detailed_rubrics and weights:
+            # 의도 타입을 대문자로 변환 (예: "hint_or_query" -> "HINT_OR_QUERY")
+            intent_display = final_intent.upper().replace("-", "_") if final_intent else "UNKNOWN"
+            
+            # 루브릭 이름 매핑 사용 (weights.py의 RUBRIC_NAME_MAP)
+            from app.domain.langgraph.nodes.turn_evaluator.weights import RUBRIC_NAME_MAP
+            
+            # 루브릭 점수를 딕셔너리로 변환 (가중치 키 순서대로)
+            rubric_scores = {}
+            for rubric in detailed_rubrics:
+                rubric_name = rubric.get("name", rubric.get("criterion", ""))
+                rubric_score = rubric.get("score", 0)
+                
+                # RUBRIC_NAME_MAP을 사용하여 루브릭 이름을 가중치 키로 변환
+                weight_key = RUBRIC_NAME_MAP.get(rubric_name)
+                
+                # 매핑이 없으면 부분 매칭 시도
+                if not weight_key:
+                    rubric_lower = rubric_name.lower()
+                    for map_key, map_value in RUBRIC_NAME_MAP.items():
+                        if map_key.lower() in rubric_lower or any(word in rubric_lower for word in map_key.split()):
+                            weight_key = map_value
+                            break
+                
+                # 여전히 없으면 직접 매칭 시도
+                if not weight_key:
+                    if "명확성" in rubric_name or "clarity" in rubric_name.lower():
+                        weight_key = "clarity"
+                    elif "문제 적절성" in rubric_name or "problem" in rubric_name.lower() or "relevance" in rubric_name.lower():
+                        weight_key = "problem_relevance"
+                    elif "예시" in rubric_name or "example" in rubric_name.lower():
+                        weight_key = "examples"
+                    elif "규칙" in rubric_name or "rule" in rubric_name.lower():
+                        weight_key = "rules"
+                    elif "문맥" in rubric_name or "context" in rubric_name.lower():
+                        weight_key = "context"
+                
+                if weight_key:
+                    rubric_scores[weight_key] = round(rubric_score, 2)
+            
+            # 가중치에 있는 모든 키를 점수에도 포함 (점수가 없으면 0으로 설정)
+            for weight_key in weights.keys():
+                if weight_key not in rubric_scores:
+                    rubric_scores[weight_key] = 0.0
+            
+            # 점수 JSON 출력 (가중치 키 순서대로 정렬)
+            if rubric_scores:
+                # 가중치 키 순서대로 정렬된 딕셔너리 생성
+                ordered_scores = {key: rubric_scores.get(key, 0.0) for key in weights.keys()}
+                scores_json = {intent_display: ordered_scores}
+                logger.info("")
+                logger.info(f"[Eval Turn Sync] ===== 턴 {turn} 평가 점수 (JSON) =====")
+                logger.info(json.dumps(scores_json, indent=4, ensure_ascii=False))
+                logger.info("")
+            
+            # 가중치 JSON 출력
+            weights_json = {intent_display: weights}
+            logger.info(f"[Eval Turn Sync] ===== 턴 {turn} 가중치 (JSON) =====")
+            logger.info("## Weight")
+            logger.info(json.dumps(weights_json, indent=4, ensure_ascii=False))
+            logger.info("")
+        
+        # weights 로그 (기존 형식 유지)
+        if weights:
+            logger.info(f"[Eval Turn Sync]   - 가중치:")
+            for weight_key, weight_value in weights.items():
+                logger.info(f"[Eval Turn Sync]     * {weight_key}: {weight_value}")
+        
+        logger.info(f"[Eval Turn Sync] ===== 턴 {turn} 상세 평가 내용 종료 =====")
+        
         detailed_turn_log = {
             "turn_number": turn,
             "user_prompt_summary": human_message[:200] + "..." if len(human_message) > 200 else human_message,
             "prompt_evaluation_details": {
-                "intent": intent_type,
+                "intent": final_intent,  # UNKNOWN 대신 실제 intent 사용
+                "intent_types": intent_types,
+                "intent_confidence": intent_confidence,
                 "score": turn_score,
-                "rubrics": rubrics,
-                "final_reasoning": result.get("answer_summary", "재평가 완료")
+                "rubrics": detailed_rubrics,  # 상세 루브릭 정보 (중복 제거)
+                "weights": weights,  # 가중치 정보 (올바른 intent로 가져온 값)
+                "final_reasoning": comprehensive_reasoning or result.get("answer_summary", "재평가 완료")
             },
             "llm_answer_summary": result.get("answer_summary", ""),
-            "llm_answer_reasoning": rubrics[0].get("reason", "") if rubrics else "평가 없음",
+            "llm_answer_reasoning": comprehensive_reasoning or (detailed_rubrics[0].get("reasoning", "") if detailed_rubrics else "평가 없음"),
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -305,28 +571,38 @@ async def _evaluate_turn_sync(
                 async with get_db_context() as db:
                     storage_service = EvaluationStorageService(db)
                     
-                    # turn_log를 aggregate_turn_log 형식으로 변환
+                    # turn_log를 aggregate_turn_log 형식으로 변환 (상세 정보 포함)
                     turn_log_for_storage = {
                         "prompt_evaluation_details": detailed_turn_log.get("prompt_evaluation_details", {}),
-                        "comprehensive_reasoning": detailed_turn_log.get("llm_answer_reasoning", ""),
-                        "intent_types": [intent_type],
-                        "evaluations": {},
-                        "detailed_feedback": [],
+                        "comprehensive_reasoning": comprehensive_reasoning or detailed_turn_log.get("llm_answer_reasoning", ""),
+                        "intent_types": intent_types,
+                        "intent_confidence": intent_confidence,
+                        "evaluations": evaluations,  # 전체 평가 결과 (상세 정보 포함)
+                        "detailed_feedback": detailed_feedback,  # 상세 피드백
                         "turn_score": turn_score,
-                        "is_guardrail_failed": False,
-                        "guardrail_message": None,
+                        "is_guardrail_failed": turn_log_data.get("is_guardrail_failed", False),
+                        "guardrail_message": turn_log_data.get("guardrail_message"),
                     }
                     
-                    await storage_service.save_turn_evaluation(
+                    pg_evaluation = await storage_service.save_turn_evaluation(
                         session_id=postgres_session_id,
                         turn=turn,
                         turn_log=turn_log_for_storage
                     )
-                    await db.commit()
-                    logger.info(
-                        f"[Eval Turn Sync] PostgreSQL 턴 평가 저장 완료 - "
-                        f"session_id: {postgres_session_id}, turn: {turn}"
-                    )
+                    
+                    if pg_evaluation:
+                        await db.commit()
+                        logger.info(
+                            f"[Eval Turn Sync] PostgreSQL 턴 평가 저장 완료 - "
+                            f"session_id: {postgres_session_id}, turn: {turn}"
+                        )
+                    else:
+                        # 저장 실패 (None 반환)
+                        await db.rollback()
+                        logger.warning(
+                            f"[Eval Turn Sync] PostgreSQL 턴 평가 저장 실패 (None 반환) - "
+                            f"session_id: {postgres_session_id}, turn: {turn}"
+                        )
         except Exception as pg_error:
             # PostgreSQL 저장 실패해도 Redis는 저장되었으므로 경고만
             logger.warning(
@@ -336,8 +612,21 @@ async def _evaluate_turn_sync(
                     
         logger.info(f"[Eval Turn Sync] 턴 {turn} 평가 저장 완료 - session_id: {session_id}, score: {turn_score}")
         
+        # 평가 결과 반환 (요약 정보 포함)
+        # result는 Eval Turn SubGraph의 결과 (dict), answer_summary는 이미 추출됨
+        return {
+            "intent_type": final_intent,
+            "intent_types": intent_types,
+            "intent_confidence": intent_confidence,
+            "turn_score": turn_score,
+            "rubrics": detailed_rubrics,
+            "comprehensive_reasoning": comprehensive_reasoning or answer_summary,
+            "answer_summary": answer_summary
+        }
+        
     except Exception as e:
         logger.error(f"[Eval Turn Sync] 턴 {turn} 평가 실패 - session_id: {session_id}, error: {str(e)}", exc_info=True)
+        return None
 
 
 

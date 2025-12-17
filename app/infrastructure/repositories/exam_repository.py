@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.infrastructure.persistence.models.exams import Exam, ExamParticipant, ExamStatistics
 from app.infrastructure.persistence.models.problems import ProblemSpec
-from app.infrastructure.persistence.models.enums import ExamStateEnum, ExamParticipantStateEnum
+from app.infrastructure.persistence.models.enums import ExamStateEnum
 
 
 class ExamRepository:
@@ -65,7 +65,7 @@ class ExamRepository:
         self,
         exam_id: int,
         participant_id: int,
-        state: ExamParticipantStateEnum
+        state: str
     ) -> Optional[ExamParticipant]:
         """참가자 상태 업데이트"""
         participant = await self.get_exam_participant(exam_id, participant_id)
@@ -98,9 +98,7 @@ class ExamRepository:
         if participant is None:
             return False
         
-        if participant.token_limit is None:
-            return True  # 제한 없음
-        
+        # token_limit는 NOT NULL DEFAULT 0이므로 None 체크 불필요
         return (participant.token_used + required_tokens) <= participant.token_limit
     
     async def get_exam_statistics(self, exam_id: int) -> Optional[ExamStatistics]:

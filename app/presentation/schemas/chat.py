@@ -90,9 +90,10 @@ class SubmitCodeRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
+                "examId": 1,
+                "participantId": 1,
                 "problemId": 1,
-                "specVersion": 1,
-                "examParticipantId": 9001,
+                "specId": 1,
                 "finalCode": "def solve():\n    print('hello')",
                 "language": "python3.11",
                 "submissionId": 88001
@@ -100,9 +101,10 @@ class SubmitCodeRequest(BaseModel):
         }
     )
     
+    examId: int = Field(..., description="시험 ID")
+    participantId: int = Field(..., description="참가자 ID (participants.id)")
     problemId: int = Field(..., description="문제 ID")
-    specVersion: int = Field(..., description="스펙 버전")
-    examParticipantId: int = Field(..., description="참가자 식별값")
+    specId: int = Field(..., description="스펙 ID (problem_specs.id)")
     finalCode: str = Field(..., description="제출 코드")
     language: str = Field(..., description="프로그래밍 언어 (예: python3.11)")
     submissionId: int = Field(..., description="제출 ID (백엔드에서 생성)")
@@ -211,7 +213,7 @@ class SaveChatMessageResponse(BaseModel):
 
 class ProblemContext(BaseModel):
     """문제 컨텍스트"""
-    problemId: int = Field(..., description="문제 ID", alias="problemId")
+    problemId: Optional[int] = Field(None, description="문제 ID", alias="problemId")
     specVersion: int = Field(..., description="스펙 버전", alias="specVersion")
 
 
@@ -221,7 +223,7 @@ class ChatMessagesRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "sessionId": 1,
-                "examParticipantId": 9001,
+                "participantId": 1,
                 "turnId": 1,
                 "role": "USER",
                 "content": "이 문제를 DP로 푸는 힌트를 줘",
@@ -234,7 +236,7 @@ class ChatMessagesRequest(BaseModel):
     )
     
     sessionId: int = Field(..., description="세션 ID", alias="sessionId")
-    examParticipantId: int = Field(..., description="참가자 식별값", alias="examParticipantId")
+    participantId: int = Field(..., description="참가자 ID (participants.id)", alias="participantId")
     turnId: int = Field(..., description="DB의 prompt_messages.turn", alias="turnId")
     role: str = Field(..., description="역할 (USER)")
     content: str = Field(..., description="메시지 내용")

@@ -86,14 +86,18 @@ async def aggregate_final_scores(state: MainGraphState) -> Dict[str, Any]:
             "correctness": 0.30,  # 정확성
         }
         
-        # 프롬프트 점수 계산
-        prompt_scores = []
-        if holistic_flow_score is not None:
-            prompt_scores.append(holistic_flow_score)
-        if aggregate_turn_score is not None:
-            prompt_scores.append(aggregate_turn_score)
-        
-        prompt_score = sum(prompt_scores) / len(prompt_scores) if prompt_scores else 0
+        # 프롬프트 점수 계산 (가중 평균)
+        # holistic_flow_score: 60%, aggregate_turn_score: 40%
+        prompt_score = 0
+        if holistic_flow_score is not None and aggregate_turn_score is not None:
+            # 둘 다 있는 경우: 가중 평균
+            prompt_score = holistic_flow_score * 0.60 + aggregate_turn_score * 0.40
+        elif holistic_flow_score is not None:
+            # holistic_flow_score만 있는 경우
+            prompt_score = holistic_flow_score
+        elif aggregate_turn_score is not None:
+            # aggregate_turn_score만 있는 경우
+            prompt_score = aggregate_turn_score
         
         # 성능 점수
         perf_score = code_performance_score if code_performance_score is not None else 0
@@ -186,41 +190,33 @@ async def aggregate_final_scores(state: MainGraphState) -> Dict[str, Any]:
                     submission_repo = SubmissionRepository(db)
                     session_repo = SessionRepository(db)
                     
-                    # 1. Submission 생성 또는 조회
+                    # 1. Submission 조회 및 업데이트
+                    # BE에서 생성한 submission을 사용하므로, submission_id가 반드시 있어야 함
                     if not submission_id:
-                        # 코드 해시 계산
-                        code_sha256 = hashlib.sha256(code_content.encode('utf-8')).hexdigest()
-                        code_bytes = len(code_content.encode('utf-8'))
-                        code_loc = len(code_content.splitlines())
-                        
-                        # lang 기본값 (State에 없으면 "python")
-                        lang = state.get("lang", "python")
-                        
-                        submission = await submission_repo.create_submission(
-                            exam_id=exam_id,
-                            participant_id=participant_id,
-                            spec_id=spec_id,
-                            lang=lang,
-                            code_inline=code_content,
-                            code_sha256=code_sha256,
-                            code_bytes=code_bytes,
-                            code_loc=code_loc
+                        logger.error(
+                            f"[7. Aggregate Final Scores] Submission ID가 없습니다 - "
+                            f"exam_id: {exam_id}, participant_id: {participant_id}"
                         )
-                        submission_id = submission.id
-                        logger.info(
-                            f"[7. Aggregate Final Scores] Submission 생성 완료 - "
+                        raise ValueError("Submission ID is required. BE에서 생성한 submission ID가 전달되어야 합니다.")
+                    
+                    # 기존 submission 조회 및 상태 업데이트
+                    submission = await submission_repo.get_submission_by_id(submission_id)
+                    if not submission:
+                        logger.error(
+                            f"[7. Aggregate Final Scores] Submission을 찾을 수 없습니다 - "
                             f"submission_id: {submission_id}, exam_id: {exam_id}, participant_id: {participant_id}"
                         )
-                    else:
-                        # 기존 submission 상태 업데이트
-                        await submission_repo.update_submission_status(
-                            submission_id=submission_id,
-                            status=SubmissionStatusEnum.DONE
-                        )
-                        logger.info(
-                            f"[7. Aggregate Final Scores] Submission 상태 업데이트 완료 - "
-                            f"submission_id: {submission_id}, status: DONE"
-                        )
+                        raise ValueError(f"Submission not found: submission_id={submission_id}")
+                    
+                    # submission 상태 업데이트
+                    await submission_repo.update_submission_status(
+                        submission_id=submission_id,
+                        status=SubmissionStatusEnum.DONE
+                    )
+                    logger.info(
+                        f"[7. Aggregate Final Scores] Submission 상태 업데이트 완료 - "
+                        f"submission_id: {submission_id}, status: DONE"
+                    )
                     
                     # 2. Score 저장
                     score = await submission_repo.create_or_update_score(

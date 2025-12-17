@@ -28,7 +28,7 @@ services:
     image: redis:7-alpine
     container_name: ai_vibe_redis_dev
     ports:
-      - "6379:6379"
+      - "6378:6379"
     volumes:
       - redis_dev_data:/data
     healthcheck:
@@ -42,7 +42,7 @@ services:
     image: adminer:latest
     container_name: ai_vibe_adminer_dev
     ports:
-      - "8080:8080"
+      - "8081:8081"
     depends_on:
       - postgres
     environment:

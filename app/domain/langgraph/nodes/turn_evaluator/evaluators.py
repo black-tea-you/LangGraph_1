@@ -7,6 +7,7 @@ from langchain_core.runnables import RunnableLambda
 from app.domain.langgraph.states import EvalTurnState, TurnEvaluation
 from app.domain.langgraph.nodes.turn_evaluator.utils import get_llm
 from app.domain.langgraph.utils.token_tracking import extract_token_usage, accumulate_tokens
+from app.domain.langgraph.utils.structured_output_parser import parse_structured_output_async
 from app.domain.langgraph.utils.prompt_metrics import calculate_all_metrics
 
 logger = logging.getLogger(__name__)
@@ -64,57 +65,57 @@ AI의 응답은 참고용으로만 사용하고, 평가는 오직 '사용자의 
 
 {problem_info_section}{metrics_section}
 평가 기준 (Claude Prompt Engineering):
-1. **명확성 (Clarity)**: 요청이 모호하지 않고 구체적인가? (직접적이고 명확하게)
+
+1. **명확성 (Clarity)**: 요청이 모호하지 않고 구체적인가?
+   - [가이드]: 단어 수가 적더라도(Short), 의도와 대상이 명확하다면(Specific) 만점을 부여하세요. 반대로 길기만 하고 핵심이 없으면 감점하세요.
+   - **[중요]**: 짧지만 모호한 표현(예: "어 진행해봐", "이거 해줘", "계속해")은 명확성이 매우 낮으므로 50점 이하로 평가하세요. 단순히 "진행"만 요청하는 것은 구체적이지 않습니다.
+   - (메트릭 '단어 수'는 참고용일 뿐, 절대적인 채점 기준이 아닙니다.)
    - 메트릭 참고: 단어 수 {metrics['word_count']}개, 문장 수 {metrics['sentence_count']}개, 구체적 값 {metrics['clarity']['specific_value_count']}개
-   - 점수 범위별 기준:
-     * 90-100점: 단어 수 20-200개, 문장 수 2-10개, 구체적 값 1개 이상 포함
-     * 70-89점: 단어 수 10-20개 또는 200-300개, 문장 수 1-2개 또는 10-15개, 구체적 값 포함 여부 불명확
-     * 50-69점: 단어 수 5-10개 또는 300개 이상, 문장 수 1개 또는 15개 이상
-     * 0-49점: 단어 수 5개 미만, 문장 수 1개 미만, 매우 모호한 표현
 
 2. **문제 적절성 (Problem Relevance)**: 
    - 요청이 문제 특성({algorithms_display})에 적합한가?
-   - 필수 개념을 언급했는가?
+   - [가이드]: '기술 용어'의 개수보다는, 해당 용어가 문맥에 맞게 적절히 사용되었는지를 판단하세요. 핵심 키워드(예: DP) 하나만 있어도 적절하다면 충분합니다.
    - 메트릭 참고: 기술 용어 {metrics['problem_relevance']['technical_term_count']}개
-   - 점수 범위별 기준:
-     * 90-100점: 기술 용어 3개 이상, 문제 특성에 맞는 알고리즘 명시
-     * 70-89점: 기술 용어 1-2개, 문제 관련 키워드 언급
-     * 50-69점: 기술 용어 0-1개, 문제와 관련 있지만 구체적 알고리즘 없음
-     * 0-49점: 기술 용어 0개, 문제와 무관한 요청
 
 3. **예시 (Examples)**: 원하는 입출력 예시나 상황을 제공했는가? (멀티샷)
+   - [가이드]: 예시의 개수(N개)보다 '질'이 중요합니다. 단 하나의 예시라도 문제 상황을 잘 설명한다면 높은 점수를 주세요.
    - 메트릭 참고: 예시 포함 {metrics['examples']['has_examples']}, 예시 개수 {metrics['examples']['example_count']}개
-   - 점수 범위별 기준:
-     * 90-100점: 예시 2개 이상, 입출력 쌍 포함, 엣지 케이스 포함
-     * 70-89점: 예시 1개, 기본 케이스만
-     * 50-69점: 예시 없지만 상황 설명
-     * 0-49점: 예시 없음, 추상적 표현만
 
 4. **규칙 (Rules)**: {criteria} (XML 태그 사용, 제약조건 명시 등)
+   - [가이드]: XML 태그나 제약조건이 '필요한 곳에' 적절히 쓰였는지 보세요. 불필요한 태그 남발은 오히려 감점 요인입니다.
    - 메트릭 참고: XML 태그 {metrics['rules']['xml_tag_count']}개, 제약조건 {metrics['rules']['constraint_count']}개, 구조화 형식 {metrics['rules']['has_structured_format']}
-   - 점수 범위별 기준:
-     * 90-100점: XML 태그 2개 이상 또는 제약조건 2개 이상, 구조화 형식 사용
-     * 70-89점: XML 태그 1개 또는 제약조건 1개, 구조화 형식 사용
-     * 50-69점: 제약조건 언급 (XML 태그 없음), 간단한 구조화
-     * 0-49점: 제약조건 없음, 구조화 형식 없음
 
 5. **문맥 (Context)**: 이전 대화나 배경 지식을 적절히 활용했는가?
+   - [가이드]: 이전 대화 참조 횟수보다는, 참조가 맥락적으로 의미 있는지 판단하세요.
+   - **[중요]**: 단순히 이전 대화의 존재를 암시하는 것만으로는 높은 점수를 주지 마세요. 구체적으로 이전 턴의 어떤 내용을 언급하거나, AI의 특정 응답에 대한 피드백을 제공해야 합니다.
+   - 예시: "이전에 언급한 비트마스킹 부분을 더 자세히 설명해줘" (높은 점수) vs "어 진행해봐" (낮은 점수)
    - 메트릭 참고: 이전 대화 참조 {metrics['context']['has_context_reference']}, 참조 횟수 {metrics['context']['context_reference_count']}회
-   - 점수 범위별 기준:
-     * 90-100점: 이전 대화 참조 2회 이상, 구체적 내용 언급
-     * 70-89점: 이전 대화 참조 1회, 간단한 언급
-     * 50-69점: 맥락 활용 시도 (불명확)
-     * 0-49점: 맥락 활용 없음
 
-위 기준과 메트릭을 바탕으로 0-100점 사이의 점수를 부여하고, 상세한 루브릭과 추론을 제공하세요.
-메트릭은 객관적 측정값이지만, 맥락과 의미를 종합적으로 고려하여 평가하세요."""
+**[채점 원칙]**
+- 메트릭(숫자)에 얽매이지 말고, **"LLM이 이해하기 좋은 프롬프트인가?"**를 최우선으로 판단하세요.
+- 모호한 표현은 점수를 깎습니다. EX) "예시를 제공해주세요." ,"이거 해줘", "이거 왜 안돼?", "어 진행해봐"
+- 간결함(Conciseness)은 미덕이지만, **짧고 모호한 표현은 명확성과 문맥 점수를 크게 감점**하세요.
+- **짧지만 명확한 프롬프트**만 높은 점수를 받을 수 있습니다. 짧고 모호한 프롬프트는 낮은 점수를 받아야 합니다.
+- 위 기준과 메트릭을 바탕으로 0-100점 사이의 점수를 부여하고, 상세한 루브릭과 추론을 제공하세요.
+- 메트릭은 객관적 측정값이지만, 맥락과 의미를 종합적으로 고려하여 평가하세요."""
 
+    # Follow Up 평가에 대한 특별 가이드 추가
+    follow_up_guide = ""
+    if "후속 질문" in eval_type or "Follow Up" in eval_type:
+        follow_up_guide = """
+
+**[Follow Up 평가 특별 가이드]**
+- 단순히 "진행해봐", "계속해", "어 진행해봐" 같은 모호한 표현은 명확성 30점 이하, 문맥 40점 이하로 평가하세요.
+- 이전 턴의 구체적 내용을 언급하거나, 특정 부분에 대한 질문/개선 요청이 있어야 높은 점수를 받을 수 있습니다.
+- 예시: "이전에 설명한 비트마스킹 부분을 더 자세히 설명해줘" (높은 점수) vs "어 진행해봐" (낮은 점수)
+"""
+    
     user_prompt = f"""[사용자 프롬프트]
 {human_message}
 
 [AI 응답 (참고용)]
 {ai_message}
-
+{follow_up_guide}
 위 사용자 프롬프트를 '{eval_type}' 관점에서 평가하세요."""
     
     return {
@@ -242,25 +243,18 @@ async def _evaluate_turn(state: EvalTurnState, eval_type: str, criteria: str) ->
     - Chain 실행 전에 원본 LLM을 호출하여 메타데이터 추출
     """
     try:
-        # 평가 Chain 생성
-        chain = create_evaluation_chain(eval_type, criteria)
+        # LLM 인스턴스 가져오기
+        llm = get_llm()
         
-        # Chain 실행 전에 원본 LLM 호출하여 메타데이터 추출
-        # 주의: with_structured_output은 원본 응답 메타데이터를 보존하지 않으므로
-        # 원본 LLM을 먼저 호출하여 메타데이터 추출
+        # 입력 준비 및 메시지 포맷팅
         chain_input = {"state": state}
-        
-        # 메시지 포맷팅 (토큰 추출용 원본 LLM 호출에 사용)
-        # Chain 내부의 prepare_evaluation_input과 format_messages를 재사용
         prepared_input = prepare_evaluation_input_internal(chain_input, eval_type, criteria)
         formatted_messages = format_evaluation_messages(prepared_input)
         
-        # 원본 LLM 호출 (토큰 사용량 추출용)
-        from app.domain.langgraph.nodes.turn_evaluator.utils import get_llm
-        llm = get_llm()
+        # 원본 LLM 호출 (1회만 - 토큰 추출 + JSON 파싱)
         raw_response = await llm.ainvoke(formatted_messages)
         
-        # 토큰 사용량 추출 및 State에 누적 (원본 응답에서)
+        # 토큰 사용량 추출 및 State에 누적
         tokens = extract_token_usage(raw_response)
         if tokens:
             accumulate_tokens(state, tokens, token_type="eval")
@@ -268,11 +262,30 @@ async def _evaluate_turn(state: EvalTurnState, eval_type: str, criteria: str) ->
         else:
             logger.warning(f"[{eval_type} 평가] 토큰 사용량 추출 실패 - raw_response 타입: {type(raw_response)}")
         
-        # 평가 Chain 실행 (구조화된 출력 파싱)
-        chain_result = await chain.ainvoke(chain_input)
+        # 원본 응답을 구조화된 출력으로 파싱
+        try:
+            structured_llm = llm.with_structured_output(TurnEvaluation)
+            structured_result = await parse_structured_output_async(
+                raw_response=raw_response,
+                model_class=TurnEvaluation,
+                fallback_llm=structured_llm,
+                formatted_messages=formatted_messages
+            )
+        except Exception as parse_error:
+            logger.error(f"[{eval_type} 평가] 구조화된 출력 파싱 실패: {str(parse_error)}", exc_info=True)
+            # 파싱 실패 시 fallback으로 구조화된 출력 Chain 사용
+            logger.info(f"[{eval_type} 평가] Fallback: 구조화된 출력 Chain 사용")
+            structured_llm = llm.with_structured_output(TurnEvaluation)
+            structured_result = await structured_llm.ainvoke(formatted_messages)
         
-        # _llm_response는 더 이상 필요 없음 (이미 원본 응답에서 토큰 추출 완료)
-        chain_result.pop("_llm_response", None)
+        # 출력 처리 (State 형식으로 변환)
+        chain_result = {
+            "intent": structured_result.intent,
+            "score": structured_result.score,
+            "average": structured_result.score,  # 호환성 유지
+            "rubrics": [r.dict() for r in structured_result.rubrics],
+            "final_reasoning": structured_result.final_reasoning,
+        }
         
         # State에 누적된 토큰 정보를 result에 포함 (LangGraph 병합을 위해)
         if "eval_tokens" in state:
@@ -405,7 +418,7 @@ async def eval_follow_up(state: EvalTurnState) -> Dict[str, Any]:
     result = await _evaluate_turn(
         state,
         "후속 질문 (Follow Up)",
-        "이전 턴의 AI 답변을 기반으로, 추가적인 개선점이나 의문점을 논리적으로 연결하여 질문했는가?"
+        "이전 턴의 AI 답변을 기반으로, 추가적인 개선점이나 의문점을 논리적으로 연결하여 질문했는가? 단순히 '진행해봐', '계속해' 같은 모호한 표현은 낮은 점수를 받아야 합니다. 구체적으로 이전 턴의 어떤 내용을 언급하거나, 어떤 부분을 개선하고 싶은지 명시해야 합니다."
     )
     
     return {"follow_up_eval": result}

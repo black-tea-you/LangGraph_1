@@ -20,7 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.persistence.session import Base
-from app.infrastructure.persistence.models.enums import ExamStateEnum, ExamParticipantStateEnum
+from app.infrastructure.persistence.models.enums import ExamStateEnum
 
 
 class Exam(Base):
@@ -88,17 +88,17 @@ class ExamParticipant(Base):
         ForeignKey("participants.id"),
         nullable=False
     )
-    state: Mapped[ExamParticipantStateEnum] = mapped_column(
-        Enum(ExamParticipantStateEnum, name="ai_vibe_coding_test.exam_state_enum"),
+    state: Mapped[str] = mapped_column(
+        String(20),
         nullable=False,
-        default=ExamParticipantStateEnum.REGISTERED
+        default="ACTIVE"
     )
-    token_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    token_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     token_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    spec_id: Mapped[Optional[int]] = mapped_column(
+    spec_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("problem_specs.id"),
-        nullable=True
+        nullable=False
     )
     joined_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),

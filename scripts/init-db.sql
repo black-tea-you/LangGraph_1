@@ -201,17 +201,20 @@ CREATE TABLE ai_vibe_coding_test.prompt_evaluations (
     turn INTEGER,  -- 평가 대상 턴 (NULL이면 세션 전체 평가: HOLISTIC_FLOW)
     evaluation_type ai_vibe_coding_test.evaluation_type_enum NOT NULL,  -- 'TURN_EVAL', 'HOLISTIC_FLOW'
     details JSONB NOT NULL,  -- 모든 평가 데이터(점수, 분석 내용 등) 저장
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- turn이 NULL일 수 있으므로 UNIQUE 제약 조건 유지
-    UNIQUE(session_id, turn, evaluation_type)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- prompt_messages와의 Foreign Key (turn별 평가인 경우만)
-ALTER TABLE ai_vibe_coding_test.prompt_evaluations
-ADD CONSTRAINT fk_evaluation_message
-FOREIGN KEY (session_id, turn) 
-REFERENCES ai_vibe_coding_test.prompt_messages(session_id, turn)
-ON DELETE CASCADE;
+-- prompt_messages와의 Foreign Key (turn별 평가인 경우만 적용)
+-- 참고: PostgreSQL은 조건부 Foreign Key를 직접 지원하지 않으므로,
+-- TURN_EVAL인 경우에만 Foreign Key 제약 조건을 적용할 수 없습니다.
+-- 따라서 Foreign Key는 제거하고, Check Constraint와 Unique Index로만 처리합니다.
+-- 
+-- 사용자 요구사항에 따르면:
+-- - TURN_EVAL: turn 필수 (NOT NULL), prompt_messages에 해당 turn 메시지 존재 필수
+-- - HOLISTIC_FLOW: turn NULL 필수
+-- 
+-- Foreign Key 제약 조건은 애플리케이션 레벨에서 검증하거나,
+-- 또는 Check Constraint로만 처리합니다.
 
 -- 안전장치 1: Check Constraint (ENUM 값에 맞춰 수정)
 -- "Holistic 평가면 turn은 NULL, Turn 평가면 turn은 NOT NULL"
@@ -242,6 +245,7 @@ CREATE INDEX idx_prompt_evaluations_session ON ai_vibe_coding_test.prompt_evalua
 -- 5) 제출 및 채점 (Submissions & Scores)
 
 -- 2.12 submissions
+-- 한 참가자는 한 번만 제출 가능 (exam_id, participant_id unique constraint)
 CREATE TABLE ai_vibe_coding_test.submissions (
     id BIGSERIAL PRIMARY KEY,
     exam_id BIGINT NOT NULL,
@@ -257,7 +261,10 @@ CREATE TABLE ai_vibe_coding_test.submissions (
     code_bytes INTEGER,
     code_loc INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- 한 참가자는 한 번만 제출 가능
+    UNIQUE(exam_id, participant_id)
 );
 
 -- 2.13 submission_runs (개별 테스트 케이스 실행 결과)
